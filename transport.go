@@ -68,12 +68,16 @@ func (a *Agent) connect(ctx context.Context, isControlling bool, remoteUfrag, re
 
 // Read implements the Conn Read method.
 func (c *Conn) Read(p []byte) (int, error) {
+	return c.ReadWithAncillary(p, nil)
+}
+
+func (c *Conn) ReadWithAncillary(p []byte, a *uint16) (int, error) {
 	err := c.agent.loop.Err()
 	if err != nil {
 		return 0, err
 	}
 
-	n, err := c.agent.buf.Read(p)
+	n, err := c.agent.buf.ReadWithAncillary(p, a)
 	atomic.AddUint64(&c.bytesReceived, uint64(n))
 	return n, err
 }

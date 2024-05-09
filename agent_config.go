@@ -200,6 +200,9 @@ type AgentConfig struct {
 	// * Implement draft-thatcher-ice-renomination
 	// * Implement custom CandidatePair switching logic
 	BindingRequestHandler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool
+
+	// Wheter to parse incoming ECN bits and propagate them to upper layers
+	EnableEcnParsing bool
 }
 
 // initWithDefaults populates an agent and falls back to defaults if fields are unset

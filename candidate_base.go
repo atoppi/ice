@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pion/stun/v2"
+	"golang.org/x/sys/unix"
 )
 
 type candidateBase struct {
@@ -223,6 +224,11 @@ func (c *candidateBase) recvLoop(initializedCh <-chan struct{}) {
 		return
 	}
 
+	if a.parseEcn && c.NetworkType().IsUDP() {
+		c.recvLoopWithEcn(a)
+		return
+	}
+
 	buf := make([]byte, receiveMTU)
 	for {
 		n, srcAddr, err := c.conn.ReadFrom(buf)
@@ -233,7 +239,55 @@ func (c *candidateBase) recvLoop(initializedCh <-chan struct{}) {
 			return
 		}
 
-		c.handleInboundPacket(buf[:n], srcAddr)
+		c.handleInboundPacket(buf[:n], nil, srcAddr)
+	}
+}
+
+func (c *candidateBase) recvLoopWithEcn(a *Agent) {
+	udpConn := c.conn.(*net.UDPConn)
+	rawConn, err := udpConn.SyscallConn()
+	if err != nil {
+		a.log.Warnf("Failed to get a raw network connection for candidate %s: %v", c, err)
+		return
+	}
+
+	err = rawConn.Control(func(fd uintptr) {
+		errECNIPv4 := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_RECVTOS, 1)
+		errECNIPv6 := unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVTCLASS, 1)
+		a.log.Infof("Socket options for candidate %s: IP_RECVTOS=%t, IPV6_RECVTCLASS=%t\n", c, errECNIPv4 == nil, errECNIPv6 == nil)
+	})
+	if err != nil {
+		a.log.Warnf("Failed to set RECVTOS socket option for candidate %s: %v", c, err)
+		return
+	}
+
+	buf := make([]byte, receiveMTU)
+	oob := make([]byte, 128)
+	for {
+		n, oobn, _, srcAddr, err := udpConn.ReadMsgUDP(buf, oob)
+		if err != nil {
+			if !(errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)) {
+				a.log.Warnf("Failed to read from candidate %s: %v", c, err)
+			}
+			return
+		}
+
+		var ancillary uint16
+		oobData := oob[:oobn]
+		for len(oobData) > 0 {
+			hdr, body, remainder, err := unix.ParseOneSocketControlMessage(oobData)
+			if err != nil {
+				a.log.Warnf("Failed to parse socket control message for candidate %s: %v", c, err)
+				break
+			}
+			if hdr.Type == unix.IP_TOS || hdr.Type == unix.IPV6_TCLASS {
+				ancillary = ancillary | uint16(body[0]&0x3)
+				break
+			}
+			oobData = remainder
+		}
+
+		c.handleInboundPacket(buf[:n], &ancillary, srcAddr)
 	}
 }
 
@@ -252,7 +306,7 @@ func (c *candidateBase) addRemoteCandidateCache(candidate Candidate, srcAddr net
 	c.remoteCandidateCaches[toAddrPort(srcAddr)] = candidate
 }
 
-func (c *candidateBase) handleInboundPacket(buf []byte, srcAddr net.Addr) {
+func (c *candidateBase) handleInboundPacket(buf []byte, ancillary *uint16, srcAddr net.Addr) {
 	a := c.agent()
 
 	if stun.IsMessage(buf) {
@@ -288,7 +342,7 @@ func (c *candidateBase) handleInboundPacket(buf []byte, srcAddr net.Addr) {
 	}
 
 	// Note: This will return packetio.ErrFull if the buffer ever manages to fill up.
-	if _, err := a.buf.Write(buf); err != nil {
+	if _, err := a.buf.WriteWithAncillary(buf, ancillary); err != nil {
 		a.log.Warnf("Failed to write packet: %s", err)
 		return
 	}

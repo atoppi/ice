@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,8 @@ type Agent struct {
 	insecureSkipVerify bool
 
 	proxyDialer proxy.Dialer
+
+	parseEcn bool
 }
 
 // NewAgent creates a new Agent
@@ -219,6 +222,8 @@ func NewAgent(config *AgentConfig) (*Agent, error) { //nolint:gocognit
 		disableActiveTCP: config.DisableActiveTCP,
 
 		userBindingRequestHandler: config.BindingRequestHandler,
+
+		parseEcn: config.EnableEcnParsing && (runtime.GOOS == "linux" || runtime.GOOS == "darwin"),
 	}
 	a.connectionStateNotifier = &handlerNotifier{connectionStateFunc: a.onConnectionStateChange}
 	a.candidateNotifier = &handlerNotifier{candidateFunc: a.onCandidate}
